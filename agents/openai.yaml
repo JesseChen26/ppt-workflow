@@ -1,0 +1,3 @@
+interface:
+  display_name: "PPT 工作流"
+  short_description: "按阶段管理需求、大纲、视觉、制作和验收，支持变更回退与中断恢复"

@@ -1,0 +1,9 @@
+{
+  "topic": "某技术方案的验证与改进",
+  "audience": "具有相关基础的技术团队",
+  "objective": "理解方案、评价证据并讨论下一步验证",
+  "duration_minutes": 15,
+  "slide_count": 10,
+  "source_scope": "仅本次提供的报告和数据；未验证内容明确标注",
+  "template": "free_design"
+}

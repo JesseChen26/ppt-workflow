@@ -1,0 +1,9 @@
+{
+  "language": "zh",
+  "aspect_ratio": "16:9",
+  "output_mode": "editable",
+  "outputs": ["pptx"],
+  "speaker_notes": true,
+  "template": null,
+  "review_all": false
+}
