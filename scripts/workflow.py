@@ -87,9 +87,97 @@ def stage_dir(workspace, n):
 
 
 def fresh_review(n):
-    return {"summary": "", "checks": {
+    report = {"summary": "", "checks": {
         key: {"passed": False, "evidence": ""} for key in STAGES[n - 1][3]
     }}
+    if n in (3, 7):
+        report["assessment"] = fresh_assessment()
+    return report
+
+
+def fresh_assessment():
+    return {"mode": "self_review", "reviewer": "", "input_fingerprint": "",
+            "coverage": [], "findings": [], "limitations": [], "verdict": "pending"}
+
+
+def review_context(workspace, req, n):
+    """Describe review inputs without manufacturing a completed assessment."""
+    require(n in (3, 7), "专项审查仅用于阶段3和7")
+    paths = {stage_dir(workspace, 1) / "brief.md",
+             stage_dir(workspace, 2) / "sources.md",
+             stage_dir(workspace, 2) / "sources.json",
+             focus_dir(workspace) / "analysis.json",
+             stage_dir(workspace, 3) / "outline.json"}
+    stages = (2, 3) if n == 3 else (2, 3, 4, 5, 6, 7)
+    for stage in stages:
+        paths.add(stage_dir(workspace, stage) / "artifacts.json")
+        for entry in artifacts(workspace, stage):
+            paths.add(attachment_path(workspace, entry["path"]))
+    if n == 7:
+        paths.add(stage_dir(workspace, 4) / "visual.md")
+    inputs = {}
+    for path in sorted(paths):
+        require(path.resolve().is_relative_to(workspace), "审查输入不能链接到任务外")
+        inputs[path.relative_to(workspace).as_posix()] = sha(path)
+    outline = load(stage_dir(workspace, 3) / "outline.json")
+    require(isinstance(outline, list) and outline and
+            all(isinstance(s, dict) and text_ok(s.get("id")) for s in outline), "先填写逐页大纲再提取审查上下文")
+    page_ids = [s["id"] for s in outline]
+    require(len(set(page_ids)) == len(page_ids), "大纲页面 ID 重复")
+    template = fresh_assessment()
+    template["input_fingerprint"] = digest({"requirements": req, "inputs": inputs})
+    return {"stage": n, "page_ids": page_ids, "inputs": inputs, "assessment_template": template}
+
+
+def validate_assessment(workspace, req, n, assessment):
+    require(isinstance(assessment, dict), "缺少专项审查 assessment；先运行 review-context")
+    context = review_context(workspace, req, n)
+    require(assessment.get("input_fingerprint") == context["assessment_template"]["input_fingerprint"],
+            "专项审查输入已变化或未绑定版本，重新审查后更新指纹")
+    require(assessment.get("mode") in ("self_review", "independent") and text_ok(assessment.get("reviewer")),
+            "须说明审查者及 self_review/independent 模式")
+    registered = artifacts(workspace, n)
+    if assessment["mode"] == "independent":
+        records = {x["path"] for x in registered if x["role"] == "review_report"}
+        require(text_ok(assessment.get("independent_record")) and assessment["independent_record"] in records,
+                "独立审查须注册实际 review_report 附件；角色切换只能记录为 self_review")
+    limitations = assessment.get("limitations")
+    require(isinstance(limitations, list) and all(text_ok(x) for x in limitations), "limitations 须为文本数组")
+    coverage = assessment.get("coverage")
+    require(isinstance(coverage, list), "coverage 须逐页记录审查依据")
+    seen = set()
+    for row in coverage:
+        require(isinstance(row, dict) and text_ok(row.get("page_id")) and text_ok(row.get("evidence")),
+                "逐页审查须含 page_id 和具体 evidence")
+        require(row["page_id"] in context["page_ids"] and row["page_id"] not in seen, "审查页码未知或重复")
+        seen.add(row["page_id"])
+        if n == 7:
+            viewable = {x["path"] for x in registered if x["role"] in ("preview", "reviewed_deck")}
+            require(text_ok(row.get("artifact")) and row["artifact"] in viewable,
+                    "成稿逐页审查须定位已注册的 preview 或 reviewed_deck 附件")
+    require(seen == set(context["page_ids"]), "专项审查未覆盖全部页面")
+    findings = assessment.get("findings")
+    require(isinstance(findings, list), "findings 须为问题数组，无问题可为空")
+    ids = set()
+    open_minor = False
+    for finding in findings:
+        require(isinstance(finding, dict), "审查问题须为对象")
+        for key in ("id", "page_id", "problem", "evidence", "suggestion"):
+            require(text_ok(finding.get(key)), f"审查问题缺少 {key}")
+        require(finding["id"] not in ids, "审查问题 ID 重复")
+        ids.add(finding["id"])
+        require(finding["page_id"] in seen or finding["page_id"] == "deck", "问题页码未知")
+        require(finding.get("severity") in ("blocker", "major", "minor"), "问题严重程度无效")
+        require(finding.get("status") in ("open", "fixed", "dismissed"), "问题状态无效")
+        if finding["status"] == "open":
+            require(finding["severity"] == "minor", "仍有未解决的 blocker/major 问题，不能通过审查")
+            open_minor = True
+        else:
+            require(text_ok(finding.get("resolution")) and text_ok(finding.get("verification")),
+                    "关闭问题须有处理依据和复查结果")
+    require(assessment.get("verdict") in ("pass", "pass_with_notes"), "专项审查尚未通过")
+    require(not (open_minor or limitations) or assessment["verdict"] == "pass_with_notes",
+            "有待办小问题或检查限制时须使用 pass_with_notes")
 
 
 def event(state, action, **data):
@@ -418,7 +506,8 @@ def validate(workspace, req, n):
     if path.suffix == ".md":
         content = path.read_text(encoding="utf-8-sig")
         require(text_ok(content) and len(content.strip()) > 10, f"{path.name} 仍为空白或草稿")
-    check_report(load(folder / "review.json"), STAGES[n - 1][3])
+    report = load(folder / "review.json")
+    check_report(report, STAGES[n - 1][3])
     entries = artifacts(workspace, n)
     roles = {x["role"] for x in entries}
     if n == 1:
@@ -473,6 +562,10 @@ def validate(workspace, req, n):
         original_sources = {sha(attachment_path(workspace, x["path"])) for x in artifacts(workspace, 6)
                             if x["role"] == "source"}
         require(original_sources and original_sources <= source_hashes, "交付源文件未覆盖全部制作源文件")
+    if n in (3, 7):
+        state = load(workspace / "state.json")
+        if state["stages"][n - 1].get("assessment_required") or "assessment" in report:
+            validate_assessment(workspace, req, n, report.get("assessment"))
     return snapshot(workspace, req, n)
 
 
@@ -516,7 +609,8 @@ def init(workspace, title):
     state = {"schema": SCHEMA, "title": title, "created_at": now(),
              "requirements": req, "requirement_revision": 1, "review_overrides": {},
              "focus": fresh_focus(),
-             "stages": [{"status": "not_started", "snapshot": None, "approval": None} for _ in STAGES],
+             "stages": [{"status": "not_started", "snapshot": None, "approval": None,
+                         "assessment_required": n in (3, 7)} for n in range(1, 9)],
              "events": []}
     event(state, "initialized")
     write(workspace / "state.json", state)
@@ -568,6 +662,12 @@ def execute(args):
         current = next_stage(state)
         if args.command in ("status", "resume"):
             return status(workspace, state, req)
+        if args.command == "review-context":
+            require(args.stage == current and state["stages"][args.stage - 1]["status"] in
+                    ("in_progress", "awaiting_confirmation"), "先 begin 当前审查阶段")
+            if args.stage == 3:
+                require(state["focus"]["status"] == "outline", "先确认重点并 begin-outline")
+            return {"ok": True, "review_context": review_context(workspace, req, args.stage)}
         proposal = None
         if args.command in ("focus-report", "check-focus", "approve-focus", "begin-outline"):
             proposal = focus_command(args, workspace, state, req)
@@ -604,6 +704,13 @@ def execute(args):
             else:
                 require(n == current, f"只能操作最早未完成阶段: {current or '任务已完成'}")
                 if args.command == "begin":
+                    if n in (3, 7):
+                        item["assessment_required"] = True
+                        path = stage_dir(workspace, n) / "review.json"
+                        report = load(path)
+                        if "assessment" not in report:
+                            report["assessment"] = fresh_assessment()
+                            write(path, report)
                     item["status"] = "in_progress"
                     event(state, "began", stage=n)
                 else:
@@ -637,13 +744,15 @@ def parser():
     p = argparse.ArgumentParser(description=__doc__)
     commands = p.add_subparsers(dest="command", required=True)
     for name in ("init", "status", "resume", "begin", "check", "approve", "complete", "revise", "reopen", "set-review",
-                 "focus-report", "check-focus", "approve-focus", "begin-outline"):
+                 "focus-report", "check-focus", "approve-focus", "begin-outline", "review-context"):
         sub = commands.add_parser(name)
         sub.add_argument("--workspace", required=True)
         if name == "init":
             sub.add_argument("--title", required=True)
         if name in ("begin", "check", "approve", "complete", "reopen", "set-review"):
             sub.add_argument("--stage", type=int, choices=range(1, 9), required=True)
+        if name == "review-context":
+            sub.add_argument("--stage", type=int, choices=(3, 7), required=True)
         if name in ("approve", "set-review", "approve-focus"):
             sub.add_argument("--message", required=True)
             sub.add_argument("--source", required=True)

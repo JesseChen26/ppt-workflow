@@ -13,6 +13,7 @@
 - 内容阶段先确认重点，再确认章节与逐页大纲。
 - 保存来源、检查依据、确认版本与变更记录；上游改动使相关下游阶段重新进入复查。
 - 从任务目录恢复进度，避免只依赖聊天记忆。
+- 在大纲与成稿阶段进行专项审查：逐页记录依据，重要问题处理并复查后再通过；输入变化使旧审查失效。
 
 **流程脚本不直接生成 PPT，也不自动理解文档。** 阅读、内容判断与页面制作由助手及当前环境可用工具完成。制作 PPTX 需要另配演示文稿制作工具；结构检查通过不能证明内容准确、视觉质量优秀或已通过 PowerPoint 实机验证。
 
@@ -79,6 +80,8 @@ python scripts/workflow.py status --workspace "$PWD/tasks/demo"
 
 ## 默认设置与文件
 
+大纲写好后、成稿检查时，可分别用 `review-context --stage 3` / `--stage 7` 取得当前版本的审查上下文，结合 `--workspace <任务绝对目录>` 使用。按 [逻辑与成稿审查](references/role-review.md) 填写现有 `review.json.assessment`；命令只提供上下文，不会代替实际审查。参考 [定向案例](examples/review-walkthrough.md)。
+
 默认中文、16:9、可编辑 PPTX、开启讲稿；视觉模板初始为空。每次 `init` 都保存默认快照，修改 `defaults.json` 不会改变已有任务。
 
 ```text
@@ -101,6 +104,6 @@ examples/             通用要求示例
 
 ## 参考与许可
 
-方法受到 PPT Master 的阶段产物组织和 [baoyu-skills](https://github.com/JimLiu/baoyu-skills) 的内容分析、视觉维度与逐页规划启发。参考链接保留在对应文档中；本仓库没有捆绑这些项目的实现，也不依赖安装它们。
+方法受到 PPT Master 的阶段产物组织、[baoyu-skills](https://github.com/JimLiu/baoyu-skills) 的内容分析与逐页规划，以及 [gstack](https://github.com/garrytan/gstack) 的角色分工和证据化审查启发。对应文档保留来源与适配范围；本仓库没有捆绑这些项目的实现，也不依赖安装它们。
 
 [MIT License](LICENSE)。维护者：[JesseChen26](https://github.com/JesseChen26)。[个人网站项目介绍](https://jessechen26.github.io/ppt-workflow.html)。

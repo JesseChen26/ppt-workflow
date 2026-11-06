@@ -80,6 +80,13 @@ class WorkflowTests(unittest.TestCase):
         report["summary"] = "测试检查已完成；不表示实际视觉检查"
         for item in report["checks"].values():
             item.update(passed=True, evidence="测试用的明确评估依据")
+        if n in (3, 7):
+            context = w.review_context(self.ws, w.load(self.ws / "requirements.json"), n)
+            report["assessment"] = {**context["assessment_template"],
+                "reviewer": "隔离测试夹具（非真实审查）", "verdict": "pass",
+                "coverage": [{"page_id": pid, "evidence": "结构测试夹具，不声称看过实际页面",
+                              **({"artifact": "files/draft.pptx"} if n == 7 else {})}
+                             for pid in context["page_ids"]]}
         w.write(folder / "review.json", report)
 
     def finish(self, n):
@@ -541,6 +548,102 @@ class WorkflowTests(unittest.TestCase):
         w.write(path, catalog)
         with self.assertRaises(w.WorkflowError):
             self.run_cmd("complete", "--stage", 2)
+
+
+    def assessment_fixture(self, n=3):
+        self.through(n - 1)
+        self.run_cmd("begin", "--stage", n)
+        if n == 3:
+            self.prepare_focus()
+            self.run_cmd("approve-focus", "--message", "测试确认", "--source", "隔离测试")
+            self.run_cmd("begin-outline")
+        self.fill(n)
+        path = w.stage_dir(self.ws, n) / "review.json"
+        return path, w.load(path)
+
+    def test_assessment_cannot_be_removed_from_new_task(self):
+        path, report = self.assessment_fixture()
+        del report["assessment"]
+        w.write(path, report)
+        with self.assertRaisesRegex(w.WorkflowError, "缺少专项审查"):
+            self.run_cmd("complete", "--stage", 3)
+
+    def test_assessment_blocks_serious_findings_until_verified(self):
+        path, report = self.assessment_fixture()
+        issue = {"id": "L1", "page_id": "p1", "problem": "将仿真改善当成实测结论",
+                 "evidence": "材料只有仿真数据", "suggestion": "限定为仿真结果",
+                 "severity": "major", "status": "open"}
+        report["assessment"]["findings"] = [issue]
+        w.write(path, report)
+        with self.assertRaisesRegex(w.WorkflowError, "blocker/major"):
+            self.run_cmd("check", "--stage", 3)
+        issue.update(status="fixed", resolution="已限定标题")
+        w.write(path, report)
+        with self.assertRaisesRegex(w.WorkflowError, "复查结果"):
+            self.run_cmd("check", "--stage", 3)
+        issue["verification"] = "测试复查记录，实际任务需读取修订内容"
+        w.write(path, report)
+        self.run_cmd("check", "--stage", 3)
+
+    def test_assessment_stale_after_outline_changes(self):
+        _, _ = self.assessment_fixture()
+        outline_path = w.stage_dir(self.ws, 3) / "outline.json"
+        outline = w.load(outline_path)
+        outline[1]["title"] = "修改后的标题"
+        w.write(outline_path, outline)
+        with self.assertRaisesRegex(w.WorkflowError, "输入已变化"):
+            self.run_cmd("check", "--stage", 3)
+        context = self.run_cmd("review-context", "--stage", 3)["review_context"]
+        self.assertEqual(context["assessment_template"]["verdict"], "pending")
+        self.assertEqual(context["assessment_template"]["coverage"], [])
+
+    def test_assessment_requires_all_pages_and_honest_notes(self):
+        path, report = self.assessment_fixture()
+        last = report["assessment"]["coverage"].pop()
+        w.write(path, report)
+        with self.assertRaisesRegex(w.WorkflowError, "全部页面"):
+            self.run_cmd("check", "--stage", 3)
+        report["assessment"]["coverage"].append(last)
+        report["assessment"]["limitations"] = ["未进行独立审查"]
+        w.write(path, report)
+        with self.assertRaisesRegex(w.WorkflowError, "pass_with_notes"):
+            self.run_cmd("check", "--stage", 3)
+        report["assessment"]["verdict"] = "pass_with_notes"
+        w.write(path, report)
+        self.run_cmd("check", "--stage", 3)
+
+    def test_deck_assessment_requires_registered_evidence(self):
+        path, report = self.assessment_fixture(7)
+        report["assessment"]["coverage"][0]["artifact"] = "files/unseen.png"
+        w.write(path, report)
+        with self.assertRaisesRegex(w.WorkflowError, "成稿逐页审查"):
+            self.run_cmd("complete", "--stage", 7)
+        report["assessment"]["coverage"][0]["artifact"] = "files/draft.pptx"
+        report["assessment"]["mode"] = "independent"
+        w.write(path, report)
+        with self.assertRaisesRegex(w.WorkflowError, "独立审查须注册"):
+            self.run_cmd("complete", "--stage", 7)
+
+    def test_completed_legacy_task_stays_complete_until_reopened(self):
+        self.through(8)
+        state = w.load(self.ws / "state.json")
+        for n in (3, 7):
+            path = w.stage_dir(self.ws, n) / "review.json"
+            report = w.load(path)
+            del report["assessment"]
+            w.write(path, report)
+            item = state["stages"][n - 1]
+            del item["assessment_required"]
+            item["snapshot"] = w.snapshot(self.ws, state["requirements"], n)
+            if item["approval"]:
+                item["approval"]["snapshot"] = item["snapshot"]
+        w.write(self.ws / "state.json", state)
+        self.assertTrue(self.run_cmd("resume")["complete"])
+        self.run_cmd("reopen", "--stage", 7, "--reason", "复查导出")
+        self.run_cmd("begin", "--stage", 7)
+        state = w.load(self.ws / "state.json")
+        self.assertTrue(state["stages"][6]["assessment_required"])
+        self.assertEqual(w.load(w.stage_dir(self.ws, 7) / "review.json")["assessment"]["verdict"], "pending")
 
 
 if __name__ == "__main__":
